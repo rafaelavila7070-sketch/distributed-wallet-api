@@ -506,4 +506,54 @@ describe('ProcessWagerTransactionUseCase', () => {
       ),
     ).rejects.toThrow('OPENING_TRANSACTION_NOT_ALLOWED');
   });
+    it('creates a wallet with initial balance and records the opening transaction atomically', async () => {
+    const unitOfWork = new InMemoryUnitOfWork();
+    const createWallet = new CreateWalletUseCase(unitOfWork);
+
+    const wallet = await createWallet.execute({
+      playerId: 'player-opening',
+      currency: 'BRL',
+      initialBalance: {
+        amount: '100.00',
+        currency: 'BRL',
+      },
+    });
+
+    const opening = [...unitOfWork.transactions.values()][0];
+    const ledgerEntry = [...unitOfWork.ledger.values()][0];
+
+    expect(wallet.balance.toString()).toBe('100.00');
+    expect(wallet.version).toBe(2);
+
+    expect(unitOfWork.transactions.size).toBe(1);
+    expect(opening.kind).toBe(WagerTransactionKind.Opening);
+    expect(opening.status).toBe('PROCESSED');
+
+    expect(unitOfWork.ledger.size).toBe(1);
+    expect(ledgerEntry.direction).toBe('CREDIT');
+    expect(ledgerEntry.balanceBefore.toString()).toBe('0.00');
+    expect(ledgerEntry.balanceAfter.toString()).toBe('100.00');
+
+    expect(unitOfWork.outbox.size).toBe(2);
+  });
+
+  it('creates a zero-balance wallet without an opening transaction', async () => {
+    const unitOfWork = new InMemoryUnitOfWork();
+    const createWallet = new CreateWalletUseCase(unitOfWork);
+
+    const wallet = await createWallet.execute({
+      playerId: 'player-zero',
+      currency: 'BRL',
+      initialBalance: {
+        amount: '0.00',
+        currency: 'BRL',
+      },
+    });
+
+    expect(wallet.balance.toString()).toBe('0.00');
+    expect(wallet.version).toBe(1);
+    expect(unitOfWork.transactions.size).toBe(0);
+    expect(unitOfWork.ledger.size).toBe(0);
+    expect(unitOfWork.outbox.size).toBe(0);
+  });
 });

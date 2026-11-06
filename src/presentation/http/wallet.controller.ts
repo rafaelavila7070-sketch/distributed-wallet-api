@@ -1,20 +1,25 @@
+﻿
 import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   ParseUUIDPipe,
   Post,
 } from '@nestjs/common';
+
 import { WalletApplicationService } from '../../application/wallet-application.service.js';
+import type { CreateWalletCommand } from '../../application/use-cases/create-wallet.use-case.js';
 import type { ProcessWagerTransactionCommand } from '../../application/use-cases/process-wager-transaction.use-case.js';
+import { ApplicationError } from '../../application/errors/application-error.js';
 
 @Controller()
 export class WalletController {
   constructor(private readonly walletService: WalletApplicationService) {}
 
   @Post('wallets')
-  async createWallet(@Body() body: { playerId: string; currency: string }) {
+  async createWallet(@Body() body: CreateWalletCommand) {
     const wallet = await this.walletService.createWalletForPlayer(body);
     return this.serializeWallet(wallet);
   }
@@ -28,6 +33,7 @@ export class WalletController {
   @Get('wallets/:id/ledger')
   async getWalletLedger(@Param('id', new ParseUUIDPipe()) id: string) {
     const entries = await this.walletService.getLedgerByWalletId(id);
+
     return entries.map((entry) => ({
       id: entry.id,
       walletId: entry.walletId,
@@ -41,9 +47,26 @@ export class WalletController {
     }));
   }
 
+  @Get('wallets/:id/reconciliation')
+  async reconcileWallet(@Param('id', new ParseUUIDPipe()) id: string) {
+    return this.walletService.reconcileWalletById(id);
+  }
+
   @Post('transactions')
-  async processTransaction(@Body() body: ProcessWagerTransactionCommand) {
-    const transaction = await this.walletService.processWager(body);
+  async processTransaction(
+    @Body()
+    body: Omit<ProcessWagerTransactionCommand, 'idempotencyKey'>,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    if (!idempotencyKey?.trim()) {
+      throw new ApplicationError('IDEMPOTENCY_KEY_REQUIRED', 400);
+    }
+
+    const transaction = await this.walletService.processWager({
+      ...body,
+      idempotencyKey: idempotencyKey.trim(),
+    });
+
     return this.serializeTransaction(transaction);
   }
 

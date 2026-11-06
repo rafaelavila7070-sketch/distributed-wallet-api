@@ -1,9 +1,10 @@
-
 import { Inject, Injectable } from '@nestjs/common';
 
 import { CreateWalletUseCase } from './use-cases/create-wallet.use-case.js';
+import type { CreateWalletCommand } from './use-cases/create-wallet.use-case.js';
 import { GetWalletUseCase } from './use-cases/get-wallet.use-case.js';
 import { GetWalletLedgerUseCase } from './use-cases/get-wallet-ledger.use-case.js';
+import { ReconcileWalletUseCase } from './use-cases/reconcile-wallet.use-case.js';
 import {
   ProcessWagerTransactionUseCase,
 } from './use-cases/process-wager-transaction.use-case.js';
@@ -24,19 +25,18 @@ export class WalletApplicationService {
   private readonly createWallet: CreateWalletUseCase;
   private readonly getWallet: GetWalletUseCase;
   private readonly getWalletLedger: GetWalletLedgerUseCase;
+  private readonly reconcileWallet: ReconcileWalletUseCase;
   private readonly processTransaction: ProcessWagerTransactionUseCase;
 
-  constructor(
-    @Inject(WALLET_UNIT_OF_WORK)
-    unitOfWork: WalletUnitOfWork,
-  ) {
+  constructor(@Inject(WALLET_UNIT_OF_WORK) unitOfWork: WalletUnitOfWork) {
     this.createWallet = new CreateWalletUseCase(unitOfWork);
     this.getWallet = new GetWalletUseCase(unitOfWork);
     this.getWalletLedger = new GetWalletLedgerUseCase(unitOfWork);
+    this.reconcileWallet = new ReconcileWalletUseCase(unitOfWork);
     this.processTransaction = new ProcessWagerTransactionUseCase(unitOfWork);
   }
 
-  createWalletForPlayer(input: { playerId: string; currency: string }) {
+  createWalletForPlayer(input: CreateWalletCommand) {
     if (!input || typeof input !== 'object') {
       throw new ApplicationError('INVALID_REQUEST_BODY', 400);
     }
@@ -50,6 +50,10 @@ export class WalletApplicationService {
 
   getLedgerByWalletId(walletId: string) {
     return this.getWalletLedger.execute(walletId);
+  }
+
+  reconcileWalletById(walletId: string) {
+    return this.reconcileWallet.execute(walletId);
   }
 
   processWager(input: ProcessWagerTransactionCommand) {
