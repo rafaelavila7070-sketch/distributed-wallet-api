@@ -10,6 +10,8 @@
     "build": "nest build",
     "deploy": "nest deploy",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "start:worker": "bun run dist/outbox-publisher.worker.js",
+    "start:consumer": "bun run dist/sqs-consumer.worker.js",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
@@ -23,8 +25,10 @@
     "db:migration:create": "mikro-orm migration:create --config ./src/mikro-orm.config.ts",
     "db:migration:up": "mikro-orm migration:up --config ./src/mikro-orm.config.ts",
     "db:migration:down": "mikro-orm migration:down --config ./src/mikro-orm.config.ts"
+
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1163.0",
     "@mikro-orm/core": "^7.2.7",
     "@mikro-orm/decorators": "^7.2.7",
     "@mikro-orm/migrations": "^7.2.7",

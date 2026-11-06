@@ -18,7 +18,25 @@ services:
       timeout: 5s
       retries: 10
 
+  localstack:
+    image: localstack/localstack:4
+    container_name: distributed-wallet-localstack
+    restart: unless-stopped
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   api:
+    build: .
     image: distributed-wallet:latest
     container_name: distributed-wallet-api
     restart: unless-stopped
@@ -34,6 +52,59 @@ services:
       - "3000:3000"
     depends_on:
       postgres:
+        condition: service_healthy
+
+  outbox-worker:
+    build: .
+    image: distributed-wallet:latest
+    container_name: distributed-wallet-outbox-worker
+    restart: unless-stopped
+    command: ["bun", "run", "dist/outbox-publisher.worker.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: distributed_wallet
+      DATABASE_USER: wallet
+      DATABASE_PASSWORD: wallet
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT_URL: http://localstack:4566
+      SQS_EVENTS_QUEUE_NAME: wager-events
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+
+  consumer:
+    build: .
+    image: distributed-wallet:latest
+    container_name: distributed-wallet-consumer
+    restart: unless-stopped
+    command: ["bun", "run", "dist/sqs-consumer.worker.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: distributed_wallet
+      DATABASE_USER: wallet
+      DATABASE_PASSWORD: wallet
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT_URL: http://localstack:4566
+      SQS_CONSUMER_NAME: wager-transaction-consumer
+      SQS_TRANSACTIONS_QUEUE_NAME: wager-transactions.fifo
+      SQS_TRANSACTIONS_DLQ_NAME: wager-transactions-dlq.fifo
+      SQS_MAX_RECEIVE_COUNT: 5
+      SQS_VISIBILITY_TIMEOUT: 60
+      SQS_WAIT_TIME_SECONDS: 20
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
         condition: service_healthy
 
 volumes:

@@ -1,4 +1,6 @@
+import { InboxMessageRepository } from './inbox-message-repository.js';
 import { WalletLedgerRepository } from './wallet-ledger-repository.js';
+import { OutboxEventRepository } from './outbox-event-repository.js';
 import { WagerTransactionRepository } from './wager-transaction-repository.js';
 import { WalletRepository } from './wallet-repository.js';
 
@@ -8,6 +10,8 @@ export interface WalletRepositories {
   wallets: WalletRepository;
   transactions: WagerTransactionRepository;
   ledger: WalletLedgerRepository;
+  outbox: OutboxEventRepository;
+  inbox: InboxMessageRepository;
 }
 
 export interface WalletUnitOfWork {
