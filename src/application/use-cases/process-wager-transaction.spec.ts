@@ -536,7 +536,40 @@ describe('ProcessWagerTransactionUseCase', () => {
 
     expect(unitOfWork.outbox.size).toBe(2);
   });
+    it('processes 50 concurrent bets without losing balance updates', async () => {
+    const { unitOfWork, process } = await setup();
 
+    await process.execute(
+      command(WagerTransactionKind.Opening, 'opening-concurrent', '100.00'),
+    );
+
+    const operations = Array.from({ length: 50 }, (_, index) =>
+      process.execute(
+        command(
+          WagerTransactionKind.Bet,
+          `bet-concurrent-${index + 1}`,
+          '1.00',
+        ),
+      ),
+    );
+
+    const results = await Promise.all(operations);
+
+    const wallet = [...unitOfWork.wallets.values()][0];
+
+    expect(results).toHaveLength(50);
+
+    expect(results.every((result) => result.status === 'PROCESSED')).toBe(
+      true,
+    );
+
+    expect(wallet.balance.toString()).toBe('50.00');
+
+    expect(unitOfWork.transactions.size).toBe(51);
+
+    expect(unitOfWork.ledger.size).toBe(51);
+  });
+  
   it('creates a zero-balance wallet without an opening transaction', async () => {
     const unitOfWork = new InMemoryUnitOfWork();
     const createWallet = new CreateWalletUseCase(unitOfWork);

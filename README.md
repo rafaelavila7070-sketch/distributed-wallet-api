@@ -18,6 +18,8 @@ O projeto utiliza Domain-Driven Design (DDD), arquitetura baseada em portas e ad
 - Outbox transacional para publicação confiável de eventos.
 - Consumer SQS com retentativas, controle de visibilidade e Dead Letter Queue (DLQ).
 - Worker independente para publicação de eventos da Outbox.
+- Health check com verificação da conexão com PostgreSQL.
+- Middleware de logs HTTP estruturados, com método, rota, status e duração da requisição.
 
 ## Tecnologias
 
@@ -39,7 +41,7 @@ O projeto está organizado em camadas:
 - **Domain:** entidades, regras de negócio e objetos de valor.
 - **Application:** casos de uso, serviços e portas.
 - **Infrastructure:** persistência, migrations, repositórios e mensageria.
-- **Presentation:** controladores e endpoints HTTP.
+- **Presentation:** controladores, middleware e endpoints HTTP.
 
 O processamento assíncrono utiliza os padrões **Transactional Inbox** e **Transactional Outbox**:
 
@@ -114,18 +116,47 @@ bun run start:dev
 
 Nesse cenário, a API acessa o banco por `localhost:5433`.
 
+## Workers
+
+Os workers podem ser executados separadamente:
+
+Worker de publicação da Outbox:
+
+```bash
+bun run start:worker
+```
+
+Consumer de mensagens SQS:
+
+```bash
+bun run start:consumer
+```
+
 ## Endpoints
 
 ### Health check
 
 `GET /api/v1`
 
-Resposta:
+Verifica a disponibilidade da API e a conexão com o PostgreSQL.
+
+Resposta com banco disponível:
 
 ```json
 {
   "status": "ok",
-  "service": "distributed-wallet-api"
+  "service": "distributed-wallet-api",
+  "database": "connected"
+}
+```
+
+Resposta com banco indisponível:
+
+```json
+{
+  "status": "error",
+  "service": "distributed-wallet-api",
+  "database": "disconnected"
 }
 ```
 
@@ -215,6 +246,18 @@ A idempotência utiliza fingerprint SHA-256 do conteúdo da requisição. A reut
 
 Transações que chegam antes de suas referências podem permanecer em `PENDING_REFERENCE` e ser reprocessadas quando a referência estiver disponível.
 
+## Observabilidade
+
+O middleware HTTP registra:
+
+- Timestamp da requisição.
+- Método HTTP.
+- Rota acessada.
+- Código de resposta.
+- Duração em milissegundos.
+
+Os registros utilizam os níveis de log `log`, `warn` e `error`, conforme o status HTTP.
+
 ## Testes e qualidade
 
 Execute:
@@ -231,9 +274,7 @@ Para os testes E2E:
 bun run test:e2e
 ```
 
-Última execução da suíte unitária: **64 testes aprovados, 0 falhas**.
-
-O build de produção e a validação da configuração do Docker Compose também foram executados com sucesso nesta revisão.
+Última execução da suíte unitária: **68 testes aprovados, 0 falhas**.
 
 ## Migrations
 
@@ -268,8 +309,8 @@ Antes de uma implantação pública, ainda são necessárias configurações e v
 - Rate limiting.
 - Gestão segura de credenciais e integração com AWS Secrets Manager.
 - Configuração de infraestrutura AWS de produção.
-- Observabilidade, métricas e rastreamento distribuído.
-- Testes adicionais de integração, concorrência e recuperação de falhas.
+- Métricas e rastreamento distribuído.
+- Testes adicionais de integração, concorrência real e recuperação de falhas.
 - Revisão de segurança e configuração de produção.
 
 Nunca publique arquivos `.env`, credenciais reais ou backups de banco de dados.
