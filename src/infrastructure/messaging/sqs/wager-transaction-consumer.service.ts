@@ -19,9 +19,11 @@ import {
 import { ApplicationError } from '../../../application/errors/application-error.js';
 import { WalletApplicationService } from '../../../application/wallet-application.service.js';
 import { WagerTransactionKind } from '../../../domain/wager-transaction/wager-transaction.js';
+import { requestContext } from '../../logging/request-context.js';
 
 interface WagerTransactionEnvelope {
   messageId: string;
+  correlationId?: string;
   type: 'WagerTransactionRequested';
   occurredAt: string;
   data: {
@@ -224,42 +226,65 @@ export class WagerTransactionConsumerService {
       return;
     }
 
+    let envelope: WagerTransactionEnvelope;
+
     try {
-      const envelope = this.parseEnvelope(message.Body);
-      const payloadHash = createHash('sha256')
-        .update(message.Body)
-        .digest('hex');
-
-      const result = await this.walletService.processWagerFromMessage(
-        {
-          providerId: envelope.data.providerId,
-          externalTransactionId: envelope.data.externalTransactionId,
-          idempotencyKey: envelope.data.idempotencyKey,
-          playerId: envelope.data.playerId,
-          walletId: envelope.data.walletId,
-          roundId: envelope.data.roundId,
-          gameId: envelope.data.gameId,
-          kind: envelope.data.kind,
-          amount: envelope.data.money.amount,
-          currency: envelope.data.money.currency,
-          referenceExternalTransactionId:
-            envelope.data.referenceExternalTransactionId,
-        },
-        {
-          consumerName: this.consumerName,
-          messageId: envelope.messageId,
-          payloadHash,
-        },
-      );
-
-      this.logger.log(
-        `Mensagem ${envelope.messageId}: ${result.status}`,
-      );
-
-      await this.acknowledge(message.ReceiptHandle);
+      envelope = this.parseEnvelope(message.Body);
     } catch (error) {
       await this.handleProcessingError(message, error);
+      return;
     }
+
+    const correlationId =
+      envelope.correlationId ?? envelope.messageId;
+
+    const payloadHash = createHash('sha256')
+      .update(message.Body)
+      .digest('hex');
+
+    await requestContext.run({ correlationId }, async () => {
+      try {
+        const result = await this.walletService.processWagerFromMessage(
+          {
+            providerId: envelope.data.providerId,
+            externalTransactionId: envelope.data.externalTransactionId,
+            idempotencyKey: envelope.data.idempotencyKey,
+            playerId: envelope.data.playerId,
+            walletId: envelope.data.walletId,
+            roundId: envelope.data.roundId,
+            gameId: envelope.data.gameId,
+            kind: envelope.data.kind,
+            amount: envelope.data.money.amount,
+            currency: envelope.data.money.currency,
+            referenceExternalTransactionId:
+              envelope.data.referenceExternalTransactionId,
+          },
+          {
+            consumerName: this.consumerName,
+            messageId: envelope.messageId,
+            payloadHash,
+          },
+        );
+
+        this.logger.log(
+          JSON.stringify({
+            event: 'sqs.message.processed',
+            consumerName: this.consumerName,
+            messageId: envelope.messageId,
+            correlationId,
+            walletId: envelope.data.walletId,
+            providerId: envelope.data.providerId,
+            externalTransactionId:
+              envelope.data.externalTransactionId,
+            status: result.status,
+          }),
+        );
+
+        await this.acknowledge(message.ReceiptHandle!);
+      } catch (error) {
+        await this.handleProcessingError(message, error);
+      }
+    });
   }
 
   private parseEnvelope(body: string): WagerTransactionEnvelope {
@@ -311,6 +336,16 @@ export class WagerTransactionConsumerService {
     }
 
     if (
+      envelope.correlationId !== undefined &&
+      (typeof envelope.correlationId !== 'string' ||
+        !/^[a-zA-Z0-9._:-]{1,128}$/.test(envelope.correlationId))
+    ) {
+      throw new PermanentMessageError(
+        'Correlation ID inválido.',
+      );
+    }
+
+    if (
       data.referenceExternalTransactionId !== undefined &&
       (typeof data.referenceExternalTransactionId !== 'string' ||
         !data.referenceExternalTransactionId.trim())
@@ -333,6 +368,12 @@ export class WagerTransactionConsumerService {
       return;
     }
 
+    const correlationId =
+      requestContext.getStore()?.correlationId ?? null;
+
+    const errorMessage =
+      error instanceof Error ? error.message : String(error);
+
     const code =
       error instanceof ApplicationError ? error.code : undefined;
 
@@ -343,7 +384,12 @@ export class WagerTransactionConsumerService {
       code === 'OPENING_TRANSACTION_NOT_ALLOWED'
     ) {
       this.logger.warn(
-        `Mensagem encaminhada para DLQ: ${error instanceof Error ? error.message : String(error)}`,
+        JSON.stringify({
+          event: 'sqs.message.rejected',
+          correlationId,
+          messageId: message.MessageId ?? null,
+          reason: errorMessage,
+        }),
       );
 
       await this.moveToDlq(message);
@@ -356,7 +402,12 @@ export class WagerTransactionConsumerService {
       error.statusCode < 500
     ) {
       this.logger.warn(
-        `Erro de negócio terminal; mensagem confirmada: ${error.code}`,
+        JSON.stringify({
+          event: 'sqs.message.terminal_error',
+          correlationId,
+          messageId: message.MessageId ?? null,
+          code,
+        }),
       );
 
       await this.acknowledge(receiptHandle);
@@ -369,7 +420,12 @@ export class WagerTransactionConsumerService {
 
     if (receiveCount >= this.maxReceiveCount) {
       this.logger.error(
-        `Limite de tentativas atingido. Encaminhando para DLQ.`,
+        JSON.stringify({
+          event: 'sqs.message.max_attempts_exceeded',
+          correlationId,
+          messageId: message.MessageId ?? null,
+          receiveCount,
+        }),
       );
 
       await this.moveToDlq(message);
@@ -382,7 +438,15 @@ export class WagerTransactionConsumerService {
     );
 
     this.logger.warn(
-      `Falha temporária. Nova tentativa em ${delaySeconds}s. Tentativa ${receiveCount}/${this.maxReceiveCount}.`,
+      JSON.stringify({
+        event: 'sqs.message.retry_scheduled',
+        correlationId,
+        messageId: message.MessageId ?? null,
+        receiveCount,
+        maxReceiveCount: this.maxReceiveCount,
+        delaySeconds,
+        error: errorMessage,
+      }),
     );
 
     await this.client.send(

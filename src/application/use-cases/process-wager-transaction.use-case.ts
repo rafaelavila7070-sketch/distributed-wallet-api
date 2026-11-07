@@ -1,4 +1,3 @@
-
 import { createHash, randomUUID } from 'node:crypto';
 
 import { Money } from '../../domain/shared/money.js';
@@ -23,6 +22,8 @@ import type {
 } from '../ports/wallet-unit-of-work.js';
 
 import type { Wallet } from '../../domain/wallet/wallet.js';
+
+import { requestContext } from '../../infrastructure/logging/request-context.js';
 
 export interface ProcessWagerTransactionCommand {
   providerId: string;
@@ -557,6 +558,7 @@ export class ProcessWagerTransactionUseCase {
       eventType: `wager.transaction.${transaction.status.toLowerCase()}`,
       createdAt: new Date(),
       payload: {
+        correlationId: requestContext.getStore()?.correlationId ?? null,
         transactionId: transaction.id,
         providerId: transaction.providerId,
         externalTransactionId: transaction.externalTransactionId,

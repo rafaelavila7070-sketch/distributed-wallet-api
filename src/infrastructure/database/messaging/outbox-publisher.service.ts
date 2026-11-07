@@ -66,7 +66,11 @@ export class OutboxPublisherService implements OnModuleDestroy {
     await this.ensureQueue();
 
     this.logger.log(
-      `Outbox publisher iniciado. Publisher ID: ${this.publisherId}`,
+      JSON.stringify({
+        event: 'outbox.publisher.started',
+        publisherId: this.publisherId,
+        queueName: this.queueName,
+      }),
     );
 
     while (!this.stopping) {
@@ -78,15 +82,23 @@ export class OutboxPublisherService implements OnModuleDestroy {
         }
       } catch (error) {
         this.logger.error(
-          'Erro no ciclo de publicação do Outbox',
-          this.getErrorMessage(error),
+          JSON.stringify({
+            event: 'outbox.publisher.cycle_failed',
+            publisherId: this.publisherId,
+            error: this.getErrorMessage(error),
+          }),
         );
 
         await this.sleep(3000);
       }
     }
 
-    this.logger.log('Outbox publisher finalizado.');
+    this.logger.log(
+      JSON.stringify({
+        event: 'outbox.publisher.stopped',
+        publisherId: this.publisherId,
+      }),
+    );
   }
 
   async publishPendingEvents(): Promise<number> {
@@ -128,7 +140,12 @@ export class OutboxPublisherService implements OnModuleDestroy {
       );
     }
 
-    this.logger.log(`Fila SQS disponível: ${this.queueName}`);
+    this.logger.log(
+      JSON.stringify({
+        event: 'outbox.publisher.queue_ready',
+        queueName: this.queueName,
+      }),
+    );
   }
 
   private async claimPendingEvents(): Promise<OutboxEventRow[]> {
@@ -171,6 +188,28 @@ export class OutboxPublisherService implements OnModuleDestroy {
   }
 
   private async publishEvent(event: OutboxEventRow): Promise<void> {
+    const payload = event.payload;
+
+    const correlationId =
+      typeof payload.correlationId === 'string'
+        ? payload.correlationId
+        : null;
+
+    const transactionId =
+      typeof payload.transactionId === 'string'
+        ? payload.transactionId
+        : null;
+
+    const walletId =
+      typeof payload.walletId === 'string'
+        ? payload.walletId
+        : null;
+
+    const providerId =
+      typeof payload.providerId === 'string'
+        ? payload.providerId
+        : null;
+
     try {
       if (!this.queueUrl) {
         throw new Error('URL da fila SQS não configurada.');
@@ -180,7 +219,7 @@ export class OutboxPublisherService implements OnModuleDestroy {
         eventId: event.event_id,
         type: event.event_type,
         occurredAt: new Date(event.created_at).toISOString(),
-        data: event.payload,
+        data: payload,
       };
 
       await this.sqs.send(
@@ -192,20 +231,45 @@ export class OutboxPublisherService implements OnModuleDestroy {
 
       await this.markAsPublished(event.id);
 
-      this.logger.log(`Evento publicado: ${event.event_id}`);
+      this.logger.log(
+        JSON.stringify({
+          event: 'outbox.event.published',
+          publisherId: this.publisherId,
+          eventId: event.event_id,
+          eventType: event.event_type,
+          correlationId,
+          transactionId,
+          walletId,
+          providerId,
+        }),
+      );
     } catch (error) {
       const errorMessage = this.getErrorMessage(error);
 
       this.logger.error(
-        `Falha ao publicar evento ${event.event_id}: ${errorMessage}`,
+        JSON.stringify({
+          event: 'outbox.event.publish_failed',
+          publisherId: this.publisherId,
+          eventId: event.event_id,
+          eventType: event.event_type,
+          correlationId,
+          transactionId,
+          walletId,
+          providerId,
+          error: errorMessage,
+        }),
       );
 
       try {
         await this.scheduleRetry(event, errorMessage);
       } catch (retryError) {
         this.logger.error(
-          `Não foi possível agendar nova tentativa para ${event.event_id}`,
-          this.getErrorMessage(retryError),
+          JSON.stringify({
+            event: 'outbox.event.retry_schedule_failed',
+            publisherId: this.publisherId,
+            eventId: event.event_id,
+            error: this.getErrorMessage(retryError),
+          }),
         );
       }
     }
@@ -262,7 +326,14 @@ export class OutboxPublisherService implements OnModuleDestroy {
     ]);
 
     this.logger.warn(
-      `Evento ${event.event_id}: tentativa ${nextAttempt} agendada em ${delaySeconds}s.`,
+      JSON.stringify({
+        event: 'outbox.event.retry_scheduled',
+        publisherId: this.publisherId,
+        eventId: event.event_id,
+        attempt: nextAttempt,
+        delaySeconds,
+        error: errorMessage,
+      }),
     );
   }
 

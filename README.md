@@ -1,25 +1,9 @@
+
 # Distributed Wallet API
 
-API REST para gerenciamento de carteiras digitais em uma plataforma de jogos, desenvolvida com NestJS, TypeScript, MikroORM e PostgreSQL.
+API de carteira digital distribuída desenvolvida como solução para o desafio técnico da Jungle Gaming.
 
-O projeto utiliza Domain-Driven Design (DDD), arquitetura baseada em portas e adaptadores e processamento assíncrono de eventos.
-
-## Funcionalidades
-
-- Criação e consulta de carteiras.
-- Processamento de transações financeiras de jogos.
-- Ledger financeiro com registros append-only.
-- Controle de idempotência.
-- Tratamento de transações com referências pendentes.
-- Reembolsos e reversões.
-- Controle de concorrência com bloqueio pessimista e versionamento.
-- Persistência transacional no PostgreSQL.
-- Inbox para deduplicação e rastreamento de mensagens.
-- Outbox transacional para publicação confiável de eventos.
-- Consumer SQS com retentativas, controle de visibilidade e Dead Letter Queue (DLQ).
-- Worker independente para publicação de eventos da Outbox.
-- Health check com verificação da conexão com PostgreSQL.
-- Middleware de logs HTTP estruturados, com método, rota, status e duração da requisição.
+O projeto utiliza NestJS, TypeScript, MikroORM e PostgreSQL, com foco em consistência financeira, concorrência, idempotência e processamento assíncrono de mensagens.
 
 ## Tecnologias
 
@@ -27,85 +11,200 @@ O projeto utiliza Domain-Driven Design (DDD), arquitetura baseada em portas e ad
 - NestJS
 - Bun
 - MikroORM
-- PostgreSQL 17
+- PostgreSQL
 - Docker e Docker Compose
-- AWS SDK SQS
+- AWS SDK for JavaScript (SQS)
 - LocalStack
 - Bun Test
 - Oxlint
 
+## Funcionalidades
+
+- Criação e consulta de carteiras.
+- Controle de saldo com precisão decimal.
+- Operações financeiras: BET, WIN, LOSS, REFUND e ROLLBACK.
+- Registro de transações e histórico financeiro (ledger).
+- Idempotência por chave e identificação externa.
+- Tratamento de transações recebidas antes de suas referências.
+- Controle de concorrência com bloqueio pessimista e versão da carteira.
+- Persistência transacional de saldo, transações e ledger.
+- Padrões Inbox e Outbox para processamento assíncrono.
+- Publicação de eventos por Amazon SQS.
+- Retentativas, controle de visibilidade e Dead Letter Queue (DLQ).
+- Identificação e rastreamento de requisições por correlation ID.
+- Logs estruturados para operações HTTP e processamento de mensagens.
+- Health check com verificação de conectividade com o banco de dados.
+
 ## Arquitetura
 
-O projeto está organizado em camadas:
+O projeto segue princípios de Domain-Driven Design (DDD) e arquitetura hexagonal, separando responsabilidades em quatro camadas:
 
-- **Domain:** entidades, regras de negócio e objetos de valor.
-- **Application:** casos de uso, serviços e portas.
-- **Infrastructure:** persistência, migrations, repositórios e mensageria.
-- **Presentation:** controladores, middleware e endpoints HTTP.
+```text
+src/
+├── domain/
+│   ├── ledger/
+│   ├── shared/
+│   ├── wager-transaction/
+│   └── wallet/
+├── application/
+│   ├── use-cases/
+│   └── services/
+├── infrastructure/
+│   ├── database/
+│   ├── logging/
+│   └── messaging/
+└── presentation/
+    └── http/
+```
 
-O processamento assíncrono utiliza os padrões **Transactional Inbox** e **Transactional Outbox**:
+- **Domain:** regras de negócio, entidades, objetos de valor e invariantes financeiras.
+- **Application:** casos de uso e coordenação das operações.
+- **Infrastructure:** persistência, mensageria, integrações e logging.
+- **Presentation:** controllers, middleware e exposição dos endpoints HTTP.
 
-1. O consumer recebe uma mensagem da fila SQS.
-2. A Inbox registra a identificação e o hash do conteúdo para detectar duplicidade ou conflito.
-3. O processamento financeiro e o registro da Inbox acontecem na mesma transação do banco.
-4. A Outbox armazena eventos na mesma transação das alterações financeiras.
-5. Um worker independente publica os eventos pendentes no SQS.
-6. Mensagens inválidas ou que excedem o limite de tentativas podem ser encaminhadas para a DLQ.
+## Consistência financeira
 
-## Requisitos
+As operações financeiras são executadas em transações do banco de dados, garantindo que a atualização do saldo, o registro da transação e a criação das entradas do ledger sejam persistidos de forma consistente.
 
-- Bun 1.4+
-- Docker Desktop com Docker Compose
-- Git
+O controle de concorrência utiliza:
 
-## Configuração
+- Bloqueio pessimista para operações sobre carteiras.
+- Controle de versão da carteira.
+- Restrições de unicidade no banco de dados.
+- Validações de saldo e direção das operações.
+- Valores monetários representados com precisão decimal.
 
-Clone o repositório:
+As operações que alteram o saldo são registradas no ledger, permitindo a reconciliação entre o saldo da carteira e o histórico financeiro.
+
+## Idempotência
+
+A API utiliza chaves de idempotência para evitar a execução duplicada de operações.
+
+O processamento considera:
+
+- Chave de idempotência.
+- Identificação externa da transação.
+- Hash do payload.
+- Restrições de unicidade persistidas no banco de dados.
+
+Uma requisição repetida com a mesma chave e o mesmo conteúdo não deve aplicar novamente a operação financeira.
+
+A reutilização de uma chave com conteúdo diferente é rejeitada.
+
+## Mensageria: Inbox e Outbox
+
+O projeto utiliza os padrões Inbox e Outbox para aumentar a confiabilidade do processamento assíncrono.
+
+### Inbox
+
+Responsável pelo controle das mensagens recebidas.
+
+- Identifica mensagens já processadas.
+- Evita duplicidade de operações financeiras.
+- Registra mensagens recebidas.
+- Permite retentativas de processamento.
+- Encaminha mensagens que excedem o limite de tentativas para a DLQ.
+
+### Outbox
+
+Os eventos são registrados no mesmo contexto transacional da operação financeira.
+
+Um worker independente publica os eventos pendentes no Amazon SQS.
+
+O publisher possui controle de processamento, tentativas e agendamento de novas publicações.
+
+### Consumer
+
+O consumer recebe mensagens do SQS e processa as operações utilizando o caso de uso da aplicação.
+
+O processamento inclui:
+
+- Deduplicação por Inbox.
+- Controle de visibilidade das mensagens.
+- Retentativas com backoff exponencial.
+- Encaminhamento para Dead Letter Queue após o limite de tentativas.
+
+## Observabilidade
+
+O projeto possui mecanismos de rastreamento e registro de eventos operacionais.
+
+### Correlation ID
+
+O middleware HTTP:
+
+- Aceita o header `x-correlation-id` enviado pelo cliente.
+- Valida o formato do identificador recebido.
+- Gera um UUID quando o identificador não é informado ou não é válido.
+- Devolve o identificador no header `x-correlation-id` da resposta.
+- Disponibiliza o contexto da requisição por meio de AsyncLocalStorage.
+
+O correlation ID também é propagado para os eventos da Outbox, permitindo relacionar a requisição HTTP original com o processamento assíncrono.
+
+### Logs estruturados
+
+Os registros HTTP incluem:
+
+- timestamp
+- correlationId
+- method
+- path
+- statusCode
+- durationMs
+
+Os níveis de log variam de acordo com o resultado da requisição.
+
+Os componentes de mensageria também registram informações operacionais, incluindo identificadores de eventos e mensagens, tentativas de processamento, erros e agendamento de retentativas.
+
+Os eventos de processamento do consumer são registrados em formato JSON estruturado.
+
+**Observação:** o projeto não inclui atualmente uma stack de métricas Prometheus ou tracing distribuído.
+
+## Pré-requisitos
+
+- Bun 1.4 ou superior.
+- Docker Desktop.
+- Git.
+
+## Como executar
+
+### 1. Clonar o repositório
 
 ```bash
-git clone https://github.com/SEU-USUARIO/distributed-wallet-api.git
+git clone https://github.com/rafaelavila7070-sketch/distributed-wallet-api.git
 cd distributed-wallet-api
 ```
 
-Configure as variáveis de ambiente:
+### 2. Configurar variáveis de ambiente
 
 ```bash
 cp .env.example .env
 ```
 
-O arquivo `.env.example` contém configurações destinadas ao desenvolvimento local.
+Confira as configurações do arquivo `.env` antes de iniciar a aplicação.
 
-## Execução completa com Docker
-
-Inicie os serviços:
+### 3. Executar com Docker Compose
 
 ```bash
 docker compose up -d --build
 ```
 
-Verifique os containers:
+A aplicação estará disponível em:
 
-```bash
-docker compose ps
+```text
+http://localhost:3000/api/v1
 ```
 
-A API estará disponível em:
+O ambiente utiliza os seguintes serviços:
 
-`http://localhost:3000/api/v1`
+- API
+- PostgreSQL
+- LocalStack
+- Outbox Worker
+- SQS Consumer
 
-O ambiente Docker inclui:
+### 4. Executar localmente
 
-- API REST.
-- PostgreSQL.
-- LocalStack para emulação local do SQS.
-- Consumer de transações.
-- Worker de publicação da Outbox.
-
-A API utiliza o hostname `postgres` e a porta interna `5432` para acessar o banco. A porta `5433` é disponibilizada para acesso ao PostgreSQL a partir da máquina host.
-
-## Execução local
-
-Para executar a API diretamente na máquina, mantendo o PostgreSQL em Docker:
+Para executar a aplicação fora do Docker:
 
 ```bash
 bun install
@@ -114,19 +213,17 @@ bun run db:migration:up
 bun run start:dev
 ```
 
-Nesse cenário, a API acessa o banco por `localhost:5433`.
+Nesse modo, a aplicação utiliza a porta `5433` do PostgreSQL disponibilizada pelo Docker Compose.
 
-## Workers
+### 5. Executar os processos assíncronos
 
-Os workers podem ser executados separadamente:
-
-Worker de publicação da Outbox:
+Outbox Worker:
 
 ```bash
 bun run start:worker
 ```
 
-Consumer de mensagens SQS:
+SQS Consumer:
 
 ```bash
 bun run start:consumer
@@ -134,183 +231,125 @@ bun run start:consumer
 
 ## Endpoints
 
-### Health check
+### Health Check
 
-`GET /api/v1`
-
-Verifica a disponibilidade da API e a conexão com o PostgreSQL.
-
-Resposta com banco disponível:
-
-```json
-{
-  "status": "ok",
-  "service": "distributed-wallet-api",
-  "database": "connected"
-}
+```http
+GET /api/v1
 ```
 
-Resposta com banco indisponível:
+Verifica o estado da aplicação e a conectividade com o banco de dados.
 
-```json
-{
-  "status": "error",
-  "service": "distributed-wallet-api",
-  "database": "disconnected"
-}
-```
+A resposta inclui o estado do serviço e da conexão com o PostgreSQL.
 
 ### Criar carteira
 
-`POST /api/v1/wallets`
+```http
+POST /api/v1/wallets
+Content-Type: application/json
+```
+
+Exemplo:
 
 ```json
 {
   "playerId": "player-123",
-  "currency": "BRL"
+  "currency": "BRL",
+  "initialBalance": {
+    "amount": "100.00",
+    "currency": "BRL"
+  }
 }
 ```
 
-A carteira começa com saldo `0.00`. A aplicação permite uma carteira por jogador e moeda.
+O campo `initialBalance` é opcional. Quando não informado, a carteira é criada com saldo zero.
 
-### Consultar carteira
+Quando informado com valor positivo, a criação do saldo inicial é registrada como uma operação interna de abertura (`OPENING`).
 
-`GET /api/v1/wallets/{walletUuid}`
-
-### Consultar ledger
-
-`GET /api/v1/wallets/{walletUuid}/ledger`
+A aplicação permite uma carteira por jogador e moeda.
 
 ### Processar transação
 
-`POST /api/v1/transactions`
-
-Exemplo de aposta:
-
-```json
-{
-  "providerId": "provider-demo",
-  "externalTransactionId": "event-0001",
-  "idempotencyKey": "provider-demo:event-0001",
-  "playerId": "player-123",
-  "currency": "BRL",
-  "roundId": "round-42",
-  "gameId": "game-7",
-  "kind": "BET",
-  "amount": "10.00"
-}
+```http
+POST /api/v1/transactions
+Content-Type: application/json
+Idempotency-Key: provider-demo:event-0001
 ```
 
-Tipos de transação:
+A chave de idempotência é enviada no header HTTP `Idempotency-Key`, não no corpo da requisição.
 
-- `OPENING`: crédito inicial, reservado a operações internas; não é aceito pela API pública nem pelo consumer de mensagens.
-- `BET`: débito de aposta.
-- `WIN`: crédito de prêmio.
-- `LOSS`: registro de perda sem movimentação financeira.
-- `REFUND`: reembolso de uma aposta referenciada.
-- `ROLLBACK`: reversão do efeito financeiro de uma transação.
+As operações públicas incluem:
 
-`REFUND` e `ROLLBACK` exigem `referenceExternalTransactionId`.
+- `BET`
+- `WIN`
+- `LOSS`
+- `REFUND`
+- `ROLLBACK`
 
-Os valores monetários são representados por strings decimais com até duas casas. O domínio utiliza unidades menores inteiras para evitar imprecisão de ponto flutuante.
+As operações `REFUND` e `ROLLBACK` exigem uma referência à transação externa correspondente.
 
-### Consultar transação
+A operação `OPENING` é interna e utilizada na criação de carteiras com saldo inicial.
 
-`GET /api/v1/transactions/{transactionUuid}`
+## Testes
 
-## Mensageria
-
-O consumer utiliza uma fila FIFO de entrada:
-
-- `wager-transactions.fifo`
-- `wager-transactions-dlq.fifo`
-
-O processamento inclui deduplicação por Inbox, tratamento de mensagens inválidas, controle de tentativas e encaminhamento para DLQ.
-
-O worker da Outbox publica eventos financeiros persistidos no PostgreSQL em uma fila SQS independente.
-
-No ambiente local, o LocalStack fornece a infraestrutura de mensageria sem exigir uma conta AWS.
-
-## Integridade financeira
-
-- Saldo, transação e lançamento no ledger são persistidos na mesma transação SQL.
-- Carteiras são bloqueadas com `SELECT ... FOR UPDATE` durante o processamento financeiro.
-- A versão da carteira é verificada durante a atualização.
-- Identificadores externos e chaves de idempotência possuem restrições de unicidade.
-- O banco impede lançamentos duplicados no ledger.
-- Reversões duplicadas são protegidas por índice único parcial.
-- A Inbox utiliza a combinação de consumidor e identificador da mensagem para controlar duplicidade.
-- A Outbox registra eventos na mesma transação das alterações financeiras.
-
-A idempotência utiliza fingerprint SHA-256 do conteúdo da requisição. A reutilização de uma chave com conteúdo diferente resulta em conflito HTTP `409`.
-
-Transações que chegam antes de suas referências podem permanecer em `PENDING_REFERENCE` e ser reprocessadas quando a referência estiver disponível.
-
-## Observabilidade
-
-O middleware HTTP registra:
-
-- Timestamp da requisição.
-- Método HTTP.
-- Rota acessada.
-- Código de resposta.
-- Duração em milissegundos.
-
-Os registros utilizam os níveis de log `log`, `warn` e `error`, conforme o status HTTP.
-
-## Testes e qualidade
-
-Execute:
+Para executar os testes unitários:
 
 ```bash
-bun run build
-bun run lint
 bun run test
 ```
 
-Para os testes E2E:
+Para executar os testes end-to-end:
 
 ```bash
 bun run test:e2e
 ```
 
-Última execução da suíte unitária: **68 testes aprovados, 0 falhas**.
+Para gerar o build:
+
+```bash
+bun run build
+```
+
+Para executar a análise estática:
+
+```bash
+bun run lint
+```
+
+### Resultado atual dos testes
+
+- **69 testes aprovados**
+- **0 falhas**
+- **143 verificações (`expect`)**
+- Testes distribuídos em 6 arquivos.
+
+A suíte contempla regras de domínio, processamento financeiro, idempotência, concorrência, ledger, Inbox e propagação do correlation ID.
+
+Os testes end-to-end também verificam o health check e a geração e propagação do correlation ID nas requisições HTTP.
 
 ## Migrations
 
-Criar uma migration:
-
-```bash
-bun run db:migration:create
-```
-
-Aplicar migrations:
+Para executar as migrations:
 
 ```bash
 bun run db:migration:up
 ```
 
-Reverter a última migration:
+## Limitações e melhorias futuras
 
-```bash
-bun run db:migration:down
-```
+O projeto foi desenvolvido como solução de desafio técnico e não deve ser considerado pronto para produção sem etapas adicionais de segurança e operação.
 
-Não remova volumes ou dados persistentes em ambientes que precisem ser preservados.
-
-## Segurança e limitações
-
-Este projeto é uma implementação de portfólio/desafio técnico, não uma solução financeira pronta para produção.
-
-Antes de uma implantação pública, ainda são necessárias configurações e validações como:
+Entre os próximos pontos de evolução:
 
 - Autenticação e autorização.
-- Validação de assinatura e autenticidade dos provedores.
+- Validação de assinatura de provedores.
 - Rate limiting.
-- Gestão segura de credenciais e integração com AWS Secrets Manager.
-- Configuração de infraestrutura AWS de produção.
-- Métricas e rastreamento distribuído.
-- Testes adicionais de integração, concorrência real e recuperação de falhas.
-- Revisão de segurança e configuração de produção.
+- Integração de segredos com AWS Secrets Manager.
+- Configuração de infraestrutura AWS para produção.
+- Métricas operacionais e dashboards.
+- Tracing distribuído.
+- Ampliação dos testes de integração, concorrência e recuperação de falhas.
+- Revisão de segurança e hardening da infraestrutura.
 
-Nunca publique arquivos `.env`, credenciais reais ou backups de banco de dados.
+## Repositório
+
+[GitHub — Distributed Wallet API](https://github.com/rafaelavila7070-sketch/distributed-wallet-api)

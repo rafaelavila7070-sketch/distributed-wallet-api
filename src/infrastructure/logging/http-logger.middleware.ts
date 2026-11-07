@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   Injectable,
   Logger,
@@ -5,6 +7,8 @@ import {
 } from '@nestjs/common';
 
 import type { NextFunction, Request, Response } from 'express';
+
+import { requestContext } from './request-context.js';
 
 @Injectable()
 export class HttpLoggerMiddleware implements NestMiddleware {
@@ -17,32 +21,43 @@ export class HttpLoggerMiddleware implements NestMiddleware {
   ): void {
     const startedAt = Date.now();
 
-    response.on('finish', () => {
-      const duration = Date.now() - startedAt;
+    const incomingCorrelationId = request.header('x-correlation-id');
 
-      const log = {
-        timestamp: new Date().toISOString(),
-        method: request.method,
-        path: request.originalUrl,
-        statusCode: response.statusCode,
-        durationMs: duration,
-      };
+    const correlationId =
+      incomingCorrelationId &&
+      /^[a-zA-Z0-9._:-]{1,128}$/.test(incomingCorrelationId)
+        ? incomingCorrelationId
+        : randomUUID();
 
-      const message = JSON.stringify(log);
+    response.setHeader('x-correlation-id', correlationId);
 
-      if (response.statusCode >= 500) {
-        this.logger.error(message);
-        return;
-      }
+    requestContext.run({ correlationId }, () => {
+      response.on('finish', () => {
+        const log = {
+          timestamp: new Date().toISOString(),
+          correlationId,
+          method: request.method,
+          path: request.originalUrl,
+          statusCode: response.statusCode,
+          durationMs: Date.now() - startedAt,
+        };
 
-      if (response.statusCode >= 400) {
-        this.logger.warn(message);
-        return;
-      }
+        const message = JSON.stringify(log);
 
-      this.logger.log(message);
+        if (response.statusCode >= 500) {
+          this.logger.error(message);
+          return;
+        }
+
+        if (response.statusCode >= 400) {
+          this.logger.warn(message);
+          return;
+        }
+
+        this.logger.log(message);
+      });
+
+      next();
     });
-
-    next();
   }
 }

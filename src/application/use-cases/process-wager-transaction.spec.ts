@@ -24,6 +24,7 @@ import type { InboxMessageRepository } from '../ports/inbox-message-repository.j
 
 import { CreateWalletUseCase } from './create-wallet.use-case.js';
 import { ProcessWagerTransactionUseCase } from './process-wager-transaction.use-case.js';
+import { requestContext } from '../../infrastructure/logging/request-context.js';
 
 class InMemoryUnitOfWork implements WalletUnitOfWork {
   readonly wallets = new Map<string, Wallet>();
@@ -235,6 +236,30 @@ describe('ProcessWagerTransactionUseCase', () => {
     expect(bet.status).toBe('PROCESSED');
     expect(wallet.balance.toString()).toBe('70.00');
     expect(unitOfWork.ledger.size).toBe(2);
+  });
+
+  it('propagates the correlation ID to the outbox event', async () => {
+    const { unitOfWork, process } = await setup();
+    const correlationId = 'test-correlation-123';
+
+    const opening = await requestContext.run(
+      { correlationId },
+      () =>
+        process.execute(
+          command(
+            WagerTransactionKind.Opening,
+            'opening-correlation-1',
+            '100.00',
+          ),
+        ),
+    );
+
+    const event = [...unitOfWork.outbox.values()].find(
+      (outboxEvent) => outboxEvent.aggregateId === opening.id,
+    );
+
+    expect(event).toBeDefined();
+    expect(event?.payload).toMatchObject({ correlationId });
   });
 
   it('does not apply the same idempotent transaction twice', async () => {
@@ -506,7 +531,8 @@ describe('ProcessWagerTransactionUseCase', () => {
       ),
     ).rejects.toThrow('OPENING_TRANSACTION_NOT_ALLOWED');
   });
-    it('creates a wallet with initial balance and records the opening transaction atomically', async () => {
+
+  it('creates a wallet with initial balance and records the opening transaction atomically', async () => {
     const unitOfWork = new InMemoryUnitOfWork();
     const createWallet = new CreateWalletUseCase(unitOfWork);
 
@@ -536,7 +562,8 @@ describe('ProcessWagerTransactionUseCase', () => {
 
     expect(unitOfWork.outbox.size).toBe(2);
   });
-    it('processes 50 concurrent bets without losing balance updates', async () => {
+
+  it('processes 50 concurrent bets without losing balance updates', async () => {
     const { unitOfWork, process } = await setup();
 
     await process.execute(
@@ -569,7 +596,7 @@ describe('ProcessWagerTransactionUseCase', () => {
 
     expect(unitOfWork.ledger.size).toBe(51);
   });
-  
+
   it('creates a zero-balance wallet without an opening transaction', async () => {
     const unitOfWork = new InMemoryUnitOfWork();
     const createWallet = new CreateWalletUseCase(unitOfWork);
