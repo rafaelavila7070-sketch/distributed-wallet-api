@@ -317,15 +317,82 @@ bun run lint
 
 ### Resultado atual dos testes
 
-- **69 testes aprovados**
+Última validação automatizada:
+
+- **76 testes aprovados**
 - **0 falhas**
-- **143 verificações (`expect`)**
-- Testes distribuídos em 6 arquivos.
+- **169 verificações (`expect`)**
+- **7 arquivos de teste**
+- **3 testes end-to-end aprovados**
+- Build de produção concluído com sucesso.
 
-A suíte contempla regras de domínio, processamento financeiro, idempotência, concorrência, ledger, Inbox e propagação do correlation ID.
+A suíte automatizada contempla regras de domínio, processamento financeiro, idempotência, concorrência, ledger, Inbox, Outbox, health check e propagação do correlation ID.
 
-Os testes end-to-end também verificam o health check e a geração e propagação do correlation ID nas requisições HTTP.
+### Testes adicionais de concorrência e integração
 
+Além da suíte automatizada, foram executados cenários manuais contra a API e o PostgreSQL em execução:
+
+**Idempotência concorrente**
+
+- 50 requisições simultâneas com a mesma chave de idempotência e o mesmo payload.
+- As 50 respostas retornaram HTTP 201 e status `PROCESSED`.
+- Todas referenciaram o mesmo identificador de transação.
+- Apenas um débito foi registrado no ledger.
+- Uma carteira iniciada com R$ 100,00 terminou com R$ 90,00.
+- A reconciliação confirmou diferença zero.
+
+**Concorrência financeira e saldo insuficiente**
+
+- Duas apostas simultâneas de R$ 80,00 em uma carteira com saldo inicial de R$ 100,00.
+- Uma operação foi `PROCESSED`.
+- A outra foi `REJECTED`, com `INSUFFICIENT_FUNDS`.
+- O saldo final foi R$ 20,00.
+- O ledger registrou somente o crédito inicial e o débito aprovado.
+- A reconciliação confirmou diferença de R$ 0,00 e nenhuma entrada inválida.
+
+**Concorrência com apostas distintas**
+
+- 50 apostas distintas processadas simultaneamente com saldo inicial de R$ 1.000,00: todas processadas, saldo final de R$ 500,00.
+- Em outro cenário, 50 apostas distintas com saldo inicial de R$ 100,00: 10 processadas e 40 rejeitadas por saldo insuficiente, saldo final zero.
+- As reconciliações financeiras desses cenários foram confirmadas.
+
+**Idempotência e identificadores externos**
+
+Também foram verificados:
+
+- Repetição da mesma chave com o mesmo payload.
+- Reutilização de uma chave com payload diferente, rejeitada com conflito HTTP 409.
+- Repetição de identificador externo do provedor com uma nova chave.
+- Ausência de débitos duplicados.
+
+### SQS, Inbox e Outbox
+
+Os testes de integração com LocalStack exercitaram:
+
+- Publicação e processamento de mensagem válida.
+- Confirmação de processamento e ACK.
+- Republicação controlada do mesmo envelope, identificada como duplicada pelo consumer.
+- Rejeição de JSON inválido e conflito de payload, com encaminhamento para a DLQ nos cenários exercitados.
+- Verificação das filas principal e DLQ após os testes.
+
+A republicação controlada confirmou a deduplicação pelo Inbox. Ela não representa, por si só, um teste de redelivery automática após crash real do consumer e expiração do visibility timeout.
+
+### Banco de dados
+
+As sete migrations do projeto foram inspecionadas e as estruturas aplicadas foram verificadas diretamente no PostgreSQL.
+
+Foram confirmadas as seis tabelas da aplicação:
+
+- `wallets`
+- `wager_transactions`
+- `wallet_ledger_entries`
+- `inbox_messages`
+- `outbox_events`
+- `mikro_orm_migrations`
+
+Também foram confirmadas constraints e índices para unicidade de carteiras, idempotência, identificadores externos, entradas do ledger, mensagens da Inbox e eventos da Outbox, além de chaves estrangeiras e checks de formato e valores.
+
+Os resultados documentados representam os cenários efetivamente exercitados; não equivalem a uma certificação de recuperação de falhas em produção ou a um teste completo de múltiplas instâncias distribuídas.
 ## Migrations
 
 Para executar as migrations:

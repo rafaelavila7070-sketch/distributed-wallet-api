@@ -363,24 +363,163 @@ Environment variables are configured through `.env`, using `.env.example` as a r
 
 The project uses Bun Test for automated tests.
 
-The latest recorded validation included:
+The latest automated validation included:
 
-- 76 passing tests.
+- 76 passing unit tests.
 - 0 failing tests.
 - 169 assertions.
 - 7 test files.
+- 3 passing end-to-end tests.
 - Successful production build.
 
-Coverage includes domain behavior, application transaction scenarios, HTTP health endpoints, and Outbox publisher behavior.
+Automated coverage includes domain behavior, application transaction scenarios, HTTP health endpoints, Inbox deduplication, and Outbox publisher behavior.
 
-A manual LocalStack smoke test also exercised message processing, duplicate delivery, malformed-message handling, and message routing.
+Additional manual API and database scenarios were executed against the running Docker Compose environment. Their results are documented in Sections 17 and 18.
 
-The duplicate-delivery validation confirmed that processing the same wager message again did not create a second financial debit or additional ledger entry.
+A LocalStack smoke test exercised valid message processing, acknowledgement, controlled duplicate replay, malformed-message handling, and DLQ routing.
 
-These results do not constitute a complete multi-instance concurrency or production crash-recovery test suite.
+The controlled replay confirmed that processing the same wager envelope again did not create a second financial debit or additional ledger entry.
 
+The replay was a controlled republication of the same envelope. It was not an automatic redelivery test caused by a consumer crash and visibility-timeout expiration.
+
+These results provide evidence for the tested scenarios, but do not constitute a complete multi-instance production concurrency or crash-recovery test suite.
 ## 16. Observability
 
 The application includes structured HTTP logging and request context propagation.
 
-Correlation identifiers are used to associate processing activity across application components
+Correlation identifiers are used to associate processing activity across application components.
+## 17. Additional Concurrency and Idempotency Validation
+
+Additional manual scenarios were executed against the running HTTP API and PostgreSQL database.
+
+### 17.1 Concurrent identical requests
+
+A dedicated wallet was initialized with BRL 100.00.
+
+Fifty simultaneous HTTP requests were submitted with the same idempotency key and identical transaction payload.
+
+Observed results:
+
+- 50 HTTP 201 responses.
+- All responses returned `PROCESSED`.
+- All responses referenced the same transaction identifier.
+- Only one financial debit was persisted.
+- Final wallet balance: BRL 90.00.
+- Ledger contained the opening credit and one debit.
+- Reconciliation reported zero difference and no invalid entries.
+
+This scenario validates concurrent request idempotency against the running database.
+
+### 17.2 Concurrent bets exceeding the available balance
+
+A separate wallet was initialized with BRL 100.00.
+
+Two simultaneous BET transactions of BRL 80.00 were submitted with different idempotency keys and external transaction identifiers.
+
+Observed results:
+
+- One transaction was `PROCESSED`.
+- One transaction was `REJECTED` with `INSUFFICIENT_FUNDS`.
+- Final wallet balance: BRL 20.00.
+- The ledger contained the opening credit and only the successful debit.
+- Reconciliation reported BRL 20.00 in both wallet and ledger balances, zero difference, and no invalid entries.
+
+This scenario confirms that the tested concurrent operations did not overspend the wallet.
+
+### 17.3 Concurrent distinct bets
+
+Two additional stress scenarios were exercised:
+
+- Fifty distinct simultaneous bets against a BRL 1,000.00 balance were all processed, resulting in a BRL 500.00 balance.
+- Fifty distinct simultaneous bets against a BRL 100.00 balance resulted in ten processed transactions and forty insufficient-funds rejections, leaving a zero balance.
+
+Wallet reconciliation was verified for these scenarios.
+
+### 17.4 Additional idempotency cases
+
+The HTTP API was also checked for:
+
+- Repeated requests with the same idempotency key and payload.
+- Reuse of an idempotency key with a different payload, rejected with HTTP 409.
+- Reuse of the provider and external transaction identifier with a different idempotency key.
+- Prevention of duplicate financial debits.
+
+These scenarios complement the database uniqueness constraints described in Section 18.
+
+## 18. Database Constraints and Indexes
+
+The seven project migration files were inspected, and the applied PostgreSQL schema was queried directly.
+
+The database contained the following six application and migration tables:
+
+- `wallets`
+- `wager_transactions`
+- `wallet_ledger_entries`
+- `inbox_messages`
+- `outbox_events`
+- `mikro_orm_migrations`
+
+The inspected schema included the following protections.
+
+### 18.1 Wallets
+
+- Primary key on wallet identifier.
+- Unique constraint on `(player_id, currency)`.
+- Balance format check requiring an unsigned decimal string with two fractional digits; this is a string-format constraint, not a native numeric balance constraint.
+- Currency format check.
+- Version check requiring a version greater than or equal to one.
+
+### 18.2 Wager transactions
+
+- Primary key on transaction identifier.
+- Unique idempotency key.
+- Unique `(provider_id, external_transaction_id)`.
+- Foreign key to the wallet.
+- Self-referencing foreign key for transaction references.
+- Checks for supported transaction kinds and statuses.
+- Positive amount and currency format checks.
+- Partial unique index preventing more than one active reversal for the same reference transaction.
+
+### 18.3 Wallet ledger
+
+- Primary key on ledger entry identifier.
+- Unique constraint on `transaction_id`, allowing at most one ledger entry per transaction.
+- Foreign keys to wallet and wager transaction.
+- Checks for valid debit/credit direction.
+- Positive amount and currency format checks.
+- Decimal format checks for `balance_before` and `balance_after`.
+- Index for wallet history ordered by creation time.
+
+### 18.4 Inbox
+
+- Primary key on message record identifier.
+- Unique constraint on `(consumer_name, message_id)` to prevent duplicate processing records for the same consumer and message.
+
+### 18.5 Outbox
+
+- Primary key on event record identifier.
+- Unique index on `event_id`.
+- Partial index for unpublished events.
+- Partial index for pending retry scheduling.
+
+The inspected PostgreSQL schema contained 16 indexes across the five principal business tables.
+
+### 18.6 Integrity considerations
+
+The wallet balance is stored as a decimal string. The database regex check rejects negative signs and enforces two fractional digits, but it is not a native numeric CHECK constraint. The application transaction flow is responsible for preventing overspending.
+
+Likewise, the ledger checks validate amount and balance formats, but do not independently enforce the arithmetic relationship between `balance_before`, `amount`, direction, and `balance_after`.
+
+That relationship is maintained by the transactional application flow and can be checked through wallet reconciliation.
+
+The inspected constraints and indexes confirm that the principal uniqueness and referential-integrity protections from the migrations were applied to the running PostgreSQL database.
+
+## 19. Validation Scope and Known Limitations
+
+The validation described in this document covers automated tests, manual HTTP concurrency scenarios, database reconciliation, and LocalStack message-processing smoke tests.
+
+The controlled duplicate-message replay demonstrates Inbox deduplication. It does not prove automatic recovery after a real consumer crash between database commit and SQS acknowledgement.
+
+The project has not been presented as a complete production deployment or as a full distributed multi-instance crash-recovery certification.
+
+Operational improvements such as Prometheus metrics, distributed tracing, production AWS infrastructure, and additional failure-injection testing remain future work.
